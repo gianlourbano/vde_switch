@@ -1,0 +1,11 @@
+{
+    "modules": [
+        "basic_dt",
+        "datasock",
+        "webserver",
+        "cli"
+    ],
+    "webserver": {
+        "port": 8080
+    }
+}

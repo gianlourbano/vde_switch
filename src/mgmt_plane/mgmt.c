@@ -10,6 +10,11 @@
 
 #define IGNORE_OPT 0
 
+#define BASE_PRESETS_PATH ".."
+#define PRESETS_PATH BASE_PRESETS_PATH "/presets/"
+#define PRESET_STR(preset) #preset ".json"
+#define PRESET(preset) PRESETS_PATH PRESET_STR(preset)
+
 // global variables
 const char *prog;
 
@@ -17,7 +22,8 @@ const char *prog;
 static struct extended_option global_options[] = {
     {"help", no_argument, 0, 'h', 0},
     {"modules", required_argument, 0, 'm', JSON_ARRAY(JSON_STRING) | JSON_REQUIRED},
-    {"config", required_argument, 0, 'c', 0}};
+    {"config", required_argument, 0, 'c', 0},
+    {"preset", required_argument, 0, 'p', 0}};
 
 static int n_global_options = sizeof(global_options) / sizeof(struct extended_option);
 
@@ -25,6 +31,7 @@ static int n_global_options = sizeof(global_options) / sizeof(struct extended_op
 static cJSON *json_config = NULL;
 int scan_json_conf(const char *);
 void usage(void);
+static int modules_loaded = 0;
 
 int parse_global_opt(int c, void *optarg)
 {
@@ -46,11 +53,22 @@ int parse_global_opt(int c, void *optarg)
             token = strtok(NULL, ",");
         }
         free(requested_modules);
+        modules_loaded = 1;
         break;
     }
     case 'c':
         scan_json_conf(optarg);
+        modules_loaded = 1;
         break;
+    case 'p':
+    {
+        char preset[256];
+        snprintf(preset, 256, PRESET(% s), optarg);
+
+        scan_json_conf(preset);
+        modules_loaded = 1;
+        break;
+    }
     default:
         break;
     }
@@ -126,6 +144,12 @@ int scan_necessary_opts(int argc, char **argv)
             break;
 
         parse_global_opt(c, optarg);
+    }
+
+    if (!modules_loaded)
+    {
+        LOG("No modules loaded, loading default preset\n");
+        scan_json_conf(PRESET(default));
     }
 
     // reset getopt
@@ -228,6 +252,20 @@ int translate_types(cJSON *obj, struct extended_option *opt, int (*parse_opts)(i
         parse_opts(c, (void *)out);
         break;
     }
+    case JSON_BOOL:
+    {
+        if(!cJSON_IsTrue(obj) && !cJSON_IsFalse(obj))
+        {
+            fprintf(stderr, "Invalid value for boolean option %s\n", opt->name);
+            exit(1);
+        }
+
+        char out[2];
+        out[0] = cJSON_IsTrue(obj) ? '1' : '0';
+        out[1] = '\0';
+        parse_opts(c, (void *)out);
+        break;
+    }
     case JSON_ARRAY(JSON_STRING):
     {
         cJSON *iter;
@@ -236,7 +274,9 @@ int translate_types(cJSON *obj, struct extended_option *opt, int (*parse_opts)(i
         JSON_ARRSTR_TO_CSTR(obj, out);
 
         parse_opts(c, (void *)out);
+        break;
     }
+    
     }
 }
 
@@ -360,30 +400,65 @@ int parse_json_conf()
         // find if it is an option
         int c = -1;
         int found = 0;
-        int i;
+        int i = 0;
         struct extended_option *opt = NULL;
-        for (i = 0; i < total_options; i++)
+
+        cJSON *mod_json = NULL;
+        int mod_index = -1;
+        Module *mod = NULL;
+
+        for (int j = 0; j < modules.size; j++)
         {
-            if (!strcmp(iter->string, long_options[i].name))
+            if (!strcmp(iter->string, modules.modules[j].mod_name))
             {
-                found = 1;
-                c = long_options[i].val >> 16;
-                opt = &long_options[i];
+                mod_json = iter;
+                mod = &modules.modules[j];
                 break;
             }
         }
-        if (!found)
-            WARN("[JSON] Unrecognized option %s\n", iter->string);
+
+        if (mod_json)
+        {
+            cJSON *opt_iter;
+            cJSON_ArrayForEach(opt_iter, mod_json)
+            {
+                for (size_t i = 0; i < mod->data->num_options; i++)
+                {
+                    if (!strcmp(opt_iter->string, mod->data->options[i].name))
+                    {
+                        translate_types(opt_iter, &mod->data->options[i], mod->parse_args);
+                        break;
+                    }
+                }
+            }
+        }
         else
         {
-            for (size_t i = 0; i < modules.size; i++)
+
+            for (i = 0; i < total_options - 1; i++)
             {
-                if (modules.modules[i].data && modules.modules[i].parse_args)
+                // printf("iter->string: %s\n", iter->string);
+                if (!strcmp(iter->string, long_options[i].name))
                 {
-                    if (c == modules.modules[i].mod_tag)
+                    found = 1;
+                    c = long_options[i].val >> 16;
+                    opt = &long_options[i];
+                    break;
+                }
+            }
+            if (!found)
+                WARN("[JSON] Unrecognized option %s\n", iter->string);
+            else
+            {
+                for (size_t i = 0; i < modules.size; i++)
+                {
+                    if (modules.modules[i].data && modules.modules[i].parse_args)
                     {
-                        translate_types(iter, opt, modules.modules[i].parse_args);
-                        break;
+                        if (c == modules.modules[i].mod_tag)
+                        {
+                            translate_types(iter, opt, modules.modules[i].parse_args);
+                            break;
+                        }
                     }
                 }
             }
@@ -394,6 +469,12 @@ int parse_json_conf()
 int parse_opts(int argc, char **argv)
 {
     build_extended_options();
+
+    if (json_config)
+    {
+        parse_json_conf();
+        cJSON_Delete(json_config);
+    }
 
     int option_index = 0;
     while (1)
@@ -406,21 +487,13 @@ int parse_opts(int argc, char **argv)
         {
             if (modules.modules[i].data && modules.modules[i].parse_args)
             {
-                if ((c >> 7) == 0)
-                    c = modules.modules[i].parse_args(c, optarg);
-                else if ((c >> 16) == modules.modules[i].mod_tag)
+                if ((c >> 16) == modules.modules[i].mod_tag)
                 {
                     modules.modules[i].parse_args(c & 0xffff, optarg);
                     c = 0;
                 }
             }
         }
-    }
-
-    if (json_config)
-    {
-        parse_json_conf();
-        cJSON_Delete(json_config);
     }
 
     free(long_options);

@@ -5,7 +5,8 @@
     F(add_fd, void, int, unsigned char, void*)    \
     F(remove_fd, void, int) \
     F(add_type, int, int, int)  \
-    F(remove_type, void, int)
+    F(remove_type, void, int) \
+    F(set_private_data, void, int, void*)
 
 #define F(name, ret, ...) typedef ret(name##_t)(__VA_ARGS__);
 DT_FUNCS

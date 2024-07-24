@@ -1,6 +1,4 @@
-#include <stdio.h>
 #include <stdlib.h>
-#include <time.h>
 
 #include "dynload.h"
 #include "debug.h"
@@ -15,7 +13,7 @@ int main(int argc, char **argv)
     // enables module inter communication
     module_interop();
 
-    // parses other options and/or config
+    // parses other options and/or config.
     parse_opts(argc, argv);
 
     // we're ready to start

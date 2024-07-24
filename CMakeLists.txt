@@ -5,14 +5,13 @@ project("vde_switch"
 )
 
 set(CMAKE_C_STANDARD 99)
+set(CMAKE_BUILD_TYPE Debug)
 
 include_directories(includes src)
-
 
 add_subdirectory(mods)
 
 file(GLOB_RECURSE SOURCES "src/*.c")
-
 add_executable(vde_switch main.c ${SOURCES})
 
 target_include_directories(vde_switch PUBLIC

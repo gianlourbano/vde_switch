@@ -66,7 +66,7 @@ int main_loop(void)
 
                     // find which module to call
 
-                    TYPE2MGR(fdpp[i]->type).handle_io(fdpp[i]->type, fds[i].fd, fds[i].revents, fdpp[i]->private_data);
+                    modules.modules[(fdtypes[((fdpp[i]->type) & 0x7f)])].handle_io(fdpp[i]->type, fds[i].fd, fds[i].revents, fdpp[i]->private_data);
 
                     // TYPE2MGR(fdpp[i]->type)->handle_io(fdpp[i]->type, fds[i].fd, fds[i].revents, fdpp[i]->private_data);
                     if (nfds != prenfds) /* the current fd has been deleted */
@@ -77,32 +77,32 @@ int main_loop(void)
     }
 }
 
-void handle_io(unsigned char type, int fd, int revents, void* private_data) {
-    
+void handle_io(unsigned char type, int fd, int revents, void *private_data)
+{
 }
 
 void help()
 {
 }
 
-void init(void *data)
+void init()
 {
     max_fds = 4;
-    fds = malloc(max_fds * sizeof(struct pollfd*));
+    fds = malloc(max_fds * sizeof(struct pollfd *));
     fdpp = malloc(max_fds * sizeof(struct pollplus *));
     nfds = 0;
 }
 
 static struct extended_option opts[] = {
-    {"threads", required_argument, 0, OPT('t'), JSON_INT}};
+    {"threads", required_argument, 0, OPT('t') | 0x100, JSON_INT}};
 
 EXPORT int parse_args(int argc, void *argv)
 {
     int c = 0;
     switch (argc)
     {
-    case 't':
-        //printf("Threads: %d\n", atoi((char *)argv));
+    case (OPT('t') | 0x100):
+        LOG("Threads: %d\n", atoi((char *)argv));
         break;
     default:
         c = argc;
@@ -113,27 +113,34 @@ EXPORT int parse_args(int argc, void *argv)
 HIDDEN Module_Data data = {0};
 EXPORT Module_Data *on_load(int tag)
 {
-    data.num_options = sizeof(opts) / sizeof(struct extended_option);
+    data.module_tag = tag;
     data.options = opts;
+    data.num_options = sizeof(opts) / sizeof(struct extended_option);
     return &data;
 }
 
-int cleanup()
+int cleanup(unsigned char type,int fd,void *arg)
 {
-    if(fds) free(fds);
+    if (fds)
+        free(fds);
 
-    if(fdpp) {
-        for(int i = 0; i < nfds; i++) {
-            if(fdpp[i]) free(fdpp[i]);
+    if (fdpp)
+    {
+        for (int i = 0; i < nfds; i++)
+        {
+            if (fdpp[i])
+                free(fdpp[i]);
         }
         free(fdpp);
     }
 
-    if(fdperm) free(fdperm);
-    if(fdtypes) free(fdtypes);
+    if (fdperm)
+        free(fdperm);
+    if (fdtypes)
+        free(fdtypes);
 
-    if(modules.modules) free(modules.modules);
-
+    if (modules.modules)
+        free(modules.modules);
 
     return 0;
 }
@@ -146,7 +153,7 @@ int cleanup()
 
 void add_fd(int fd, unsigned char type, void *private_data)
 {
-   struct pollfd *p;
+    struct pollfd *p;
     int index;
     /* enlarge fds and fdpp array if needed */
     if (nfds == maxfds)
@@ -183,7 +190,7 @@ void add_fd(int fd, unsigned char type, void *private_data)
         index = nfds;
     if ((fdpp[index] = malloc(sizeof(struct pollplus))) == NULL)
     {
-       WARN("realloc pollplus elem %s", strerror(errno));
+        WARN("realloc pollplus elem %s", strerror(errno));
         exit(1);
     }
     fdperm[fd] = index;
@@ -200,24 +207,28 @@ void remove_fd(int fd)
 {
     int i = 0;
 
-    for(i = 0; i < nfds; i++) {
+    for (i = 0; i < nfds; i++)
+    {
         if (fds[i].fd == fd)
             break;
     }
-    if(i == nfds) {
+    if (i == nfds)
+    {
         WARN("remove_fd: fd %d not found", fd);
-    } else {
+    }
+    else
+    {
         struct pollplus *pp = fdpp[i];
         // cleanup the file
-        //TYPE2MGR(pp->type).cleanup(fdpp[i]->type, fds[i].fd, fdpp[i]->private_data);
-        if(ISPRIO(fdpp[i]->type))
+        TYPE2MGR(pp->type).cleanup(fdpp[i]->type, fds[i].fd, fdpp[i]->private_data);
+        if (ISPRIO(fdpp[i]->type))
             nprio--;
         memmove(&fds[i], &fds[i + 1], (nfds - i - 1) * sizeof(struct pollfd));
-		memmove(&fdpp[i], &fdpp[i + 1], (nfds - i - 1) * sizeof(struct pollplus *));
-		for (; i < nfds; i++)
-			fdperm[fds[i].fd] = i;
-		free(pp);
-		nfds--;
+        memmove(&fdpp[i], &fdpp[i + 1], (nfds - i - 1) * sizeof(struct pollplus *));
+        for (; i < nfds; i++)
+            fdperm[fds[i].fd] = i;
+        free(pp);
+        nfds--;
     }
 }
 
@@ -232,18 +243,27 @@ int add_type(int mod_tag, int priority)
             ERROR("too many file types");
             exit(1);
         }
-        if ((fdtypes = realloc(fdtypes, maxtypes * sizeof(struct swmodule *))) == NULL)
+        if ((fdtypes = realloc(fdtypes, maxtypes * sizeof(int))) == NULL)
         {
             ERROR("realloc fdtypes %s", strerror(errno));
             exit(1);
         }
-        memset(fdtypes + ntypes, 0, sizeof(struct swmodule *) * maxtypes - ntypes);
+        memset(fdtypes + ntypes, -1, sizeof(int) * maxtypes - ntypes);
         i = ntypes;
     }
     else
-        for (i = 0; fdtypes[i] != 0; i++)
+        for (i = 0; fdtypes[i] != -1; i++)
             ;
-    fdtypes[i] = modules.modules[mod_tag].mod_tag;
+
+    // find which module to add
+    for (int j = 0; j < modules.size; j++)
+    {
+        if (modules.modules[j].mod_tag == mod_tag)
+        {
+            fdtypes[i] = j;
+            break;
+        }
+    }
     ntypes++;
     return i | ((priority != 0) ? 128 : 0);
 }
@@ -258,8 +278,13 @@ void remove_type(int type)
     }
 }
 
+void set_private_data(int fd, void* private_data) {
+    int i = fdperm[fd];
+    if (i < nfds)
+        fdpp[i]->private_data = private_data;
+}
 
-MODULE_INTEROP_MAIN(Module* module)
+MODULE_INTEROP_MAIN(Module *module)
 {
     // append module pointer to the modules array
     modules.modules = realloc(modules.modules, sizeof(Module) * (modules.size + 1));
@@ -275,6 +300,7 @@ MODULE_INTEROP_MAIN(Module* module)
         methods->remove_fd = remove_fd;
         methods->add_type = add_type;
         methods->remove_type = remove_type;
+        methods->set_private_data = set_private_data;
     }
 }
 
@@ -292,5 +318,4 @@ int show_fds(int fd)
 }
 
 ENABLE_CLI_SUPPORT(
-    {"dt/show_fds", "dt/show_fds", "Show all file descriptors", show_fds, WITHFD}
-)
+    {"dt/show_fds", "dt/show_fds", "Show all file descriptors", show_fds, WITHFD})

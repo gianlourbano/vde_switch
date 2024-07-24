@@ -26,7 +26,7 @@ void init(void* data)
     return ;
 }
 
-int cleanup()
+int cleanup(unsigned char type,int fd,void *arg)
 {
     return 0;
 }

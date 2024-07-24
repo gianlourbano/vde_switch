@@ -33,7 +33,7 @@ int load_module(const char *mod_name)
 
     // craft the full path (mod_name does not include lib and .so)
     char full_path[256];
-    snprintf(full_path, 256, FULL_PATH(%s), mod_name);
+    snprintf(full_path, 256, FULL_PATH(% s), mod_name);
 
     module->handle = dlopen(full_path, RTLD_LAZY);
     if (!module->handle)
@@ -67,12 +67,12 @@ int load_module(const char *mod_name)
     }
     else if (ml == NULL && main_loop == NULL)
     {
-        WARN("DYNLOAD: no main_loop defined\n");
+        ERROR("DYNLOAD: no main_loop defined\n");
         exit(1);
     }
 
     module->data = module->on_load(modcount);
-    module->mod_tag = modcount++;
+    module->mod_tag = module->data->module_tag = modcount++;
 
     module->mod_name = strdup(mod_name);
 
@@ -89,20 +89,25 @@ void cleanup()
         Module *module = &modules.modules[i];
         if (module && module->handle)
         {
-            module->cleanup();
-
-            if (dlclose(module->handle))
-            {
-                ERROR("Module %s could not be unloaded: %s\n", module->mod_name, dlerror());
-            }
-            LOG("Module %s unloaded\n", module->mod_name);
-            free(module->mod_name);
-            
+            module->cleanup(0, -1, NULL);
         }
     }
+
+    for (size_t i = 0; i < modules.size; i++)
+    {
+        Module *module = &modules.modules[modules.size - i - 1];
+        if (dlclose(module->handle))
+        {
+            ERROR("Module %s could not be unloaded: %s\n", module->mod_name, dlerror());
+        }
+        LOG("Module %s unloaded\n", module->mod_name);
+        free(module->mod_name);
+    }
+
     modules.size = 0;
     modules.capacity = 0;
-    if(modules.modules != NULL) free(modules.modules);
+    if (modules.modules != NULL)
+        free(modules.modules);
     modules.modules = NULL;
 }
 
@@ -152,52 +157,54 @@ int init()
     return 0;
 }
 
-void signal_handler(int sig) {
+void signal_handler(int sig)
+{
     ERROR("Caught signal %d\n", sig);
     cleanup();
     signal(sig, SIG_DFL);
-    if(sig == SIGTERM)
+    if (sig == SIGTERM)
         _exit(0);
     else
         kill(getpid(), sig);
 }
 
-void set_signal_handlers() {
+void set_signal_handlers()
+{
     struct
-	{
-		int sig;
-		const char *name;
-		int ignore;
-	} signals[] = {
-		{SIGHUP, "SIGHUP", 0},
-		{SIGINT, "SIGINT", 0},
-		{SIGPIPE, "SIGPIPE", 1},
-		{SIGALRM, "SIGALRM", 1},
-		{SIGTERM, "SIGTERM", 0},
-		{SIGUSR1, "SIGUSR1", 1},
-		{SIGUSR2, "SIGUSR2", 1},
-		{SIGPROF, "SIGPROF", 1},
-		{SIGVTALRM, "SIGVTALRM", 1},
+    {
+        int sig;
+        const char *name;
+        int ignore;
+    } signals[] = {
+        {SIGHUP, "SIGHUP", 0},
+        {SIGINT, "SIGINT", 0},
+        {SIGPIPE, "SIGPIPE", 1},
+        {SIGALRM, "SIGALRM", 1},
+        {SIGTERM, "SIGTERM", 0},
+        {SIGUSR1, "SIGUSR1", 1},
+        {SIGUSR2, "SIGUSR2", 1},
+        {SIGPROF, "SIGPROF", 1},
+        {SIGVTALRM, "SIGVTALRM", 1},
 #ifdef VDE_LINUX
-		{SIGPOLL, "SIGPOLL", 1},
+        {SIGPOLL, "SIGPOLL", 1},
 #ifdef SIGSTKFLT
-		{SIGSTKFLT, "SIGSTKFLT", 1},
+        {SIGSTKFLT, "SIGSTKFLT", 1},
 #endif
-		{SIGIO, "SIGIO", 1},
-		{SIGPWR, "SIGPWR", 1},
+        {SIGIO, "SIGIO", 1},
+        {SIGPWR, "SIGPWR", 1},
 #ifdef SIGUNUSED
-		{SIGUNUSED, "SIGUNUSED", 1},
+        {SIGUNUSED, "SIGUNUSED", 1},
 #endif
 #endif
 #ifdef VDE_DARWIN
-		{SIGXCPU, "SIGXCPU", 1},
-		{SIGXFSZ, "SIGXFSZ", 1},
+        {SIGXCPU, "SIGXCPU", 1},
+        {SIGXFSZ, "SIGXFSZ", 1},
 #endif
-		{0, NULL, 0}};
+        {0, NULL, 0}};
 
-	int i;
-	for (i = 0; signals[i].sig != 0; i++)
-		if (signal(signals[i].sig,
-				   signals[i].ignore ? SIG_IGN : signal_handler) < 0)
+    int i;
+    for (i = 0; signals[i].sig != 0; i++)
+        if (signal(signals[i].sig,
+                   signals[i].ignore ? SIG_IGN : signal_handler) < 0)
             ERROR("Setting signal handler for %s: %s\n", signals[i].name, strerror(errno));
 }

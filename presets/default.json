@@ -1,0 +1,6 @@
+{
+    "modules": [
+        "basic_dt",
+        "datasock"
+    ]
+}

@@ -27,9 +27,9 @@ typedef struct
     FUNC(help, void, void)             \
     FUNC(on_load, Module_Data *, int)  \
     FUNC(parse_args, int, int, void *) \
-    FUNC(init, void, void *)           \
+    FUNC(init, void)           \
     FUNC(handle_io, void, unsigned char, int, int, void*) \
-    FUNC(cleanup, int, void)
+    FUNC(cleanup, int, unsigned char ,int,void *)
 
 /**
  * Define the function signature for each function in the list
@@ -49,6 +49,7 @@ typedef struct Module
 #define FUNC(name, ret, ...) name##_t *name;
     LIST_OF_FUNCTIONS
 #undef FUNC
+
     // module internal data
     Module_Data *data;
 
@@ -56,10 +57,6 @@ typedef struct Module
     void *handle;
     char *mod_name;
     int mod_tag;
-
-    // module dependencies
-    char **deps;
-    int (*handle_deps)(struct Module*);
 } Module;
 
 typedef struct

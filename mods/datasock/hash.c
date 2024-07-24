@@ -1,0 +1,332 @@
+/* Copyright 2005 Renzo Davoli VDE-2
+ * Copyright 2002 Yon Uriarte and Jeff Dike (uml_switch)
+ * Licensed under the GPLv2
+ * Modified 2003 Renzo Davoli
+ */
+
+#include <stddef.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <unistd.h>
+#include <string.h>
+#include <errno.h>
+#include <time.h>
+#include <syslog.h>
+#include <sys/types.h>
+#include <sys/time.h>
+#include <sys/signal.h>
+
+#include "hash.h"
+#include "bitarray.h"
+#include "debug.h"
+#include "cli_support.h"
+#include "port.h"
+
+#define MIN_PERSISTENCE_DFL 3
+static int min_persistence=MIN_PERSISTENCE_DFL;
+#define HASH_INIT_BITS 7
+static int hash_bits;
+static int hash_mask;
+#define HASH_SIZE (1 << hash_bits)
+
+
+
+struct hash_entry {
+	struct hash_entry *next;
+	struct hash_entry **prev;
+	time_t last_seen;
+	int port;
+	u_int64_t dst;
+};
+
+static struct hash_entry **h;
+
+static int calc_hash(u_int64_t src)
+{
+	src ^= src >> 33;
+	src *= 0xff51afd7ed558ccd;
+	src ^= src >> 33;
+	src *= 0xc4ceb9fe1a85ec53;
+	return src & hash_mask;
+}
+
+#if BYTE_ORDER == LITTLE_ENDIAN
+#define EMAC2MAC6(X) \
+	(u_int)((X)&0xff), (u_int)(((X)>>8)&0xff), (u_int)(((X)>>16)&0xff), \
+(u_int)(((X)>>24)&0xff), (u_int)(((X)>>32)&0xff), (u_int)(((X)>>40)&0xff)
+#elif BYTE_ORDER == BIG_ENDIAN
+#define EMAC2MAC6(X) \
+	(u_int)(((X)>>24)&0xff), (u_int)(((X)>>16)&0xff), (u_int)(((X)>>8)&0xff), \
+  (u_int)((X)&0xff), (u_int)(((X)>>40)&0xff), (u_int)(((X)>>32)&0xff)
+#else
+#error Unknown Endianess
+#endif
+
+#define EMAC2VLAN(X) ((u_int16_t) ((X)>>48))
+#define EMAC2VLAN2(X) ((u_int) (((X)>>48) &0xff)), ((u_int) (((X)>>56) &0xff))
+
+#define find_entry(MAC) \
+	({struct hash_entry *e; \
+	 int k = calc_hash(MAC);\
+	 for(e = h[k]; e && e->dst != (MAC); e = e->next)\
+	 ;\
+	 e; })
+
+
+#define extmac(MAC,VLAN) \
+	    ((*(u_int32_t *) &((MAC)[0])) + ((u_int64_t) ((*(u_int16_t *) &((MAC)[4]))+ ((u_int64_t) (VLAN) << 16)) << 32))
+
+/* looks in global hash table 'h' for given address, and return associated
+ * port */
+int find_in_hash(unsigned char *dst,int vlan)
+{
+	struct hash_entry *e = find_entry(extmac(dst,vlan));
+	if(e == NULL) return -1;
+	return(e->port);
+}
+
+
+int find_in_hash_update(unsigned char *src,int vlan,int port)
+{
+	struct hash_entry *e;
+	u_int64_t esrc=extmac(src,vlan);
+	int k = calc_hash(esrc);
+	int oldport;
+	time_t now;
+	for(e = h[k]; e && e->dst != esrc; e = e->next)
+		;
+	if(e == NULL) {
+		e = (struct hash_entry *) malloc(sizeof(*e));
+		if(e == NULL){
+			WARN("Failed to malloc hash entry %s",strerror(errno));
+			return -1;
+		}
+		e->dst = esrc;
+		if(h[k] != NULL) h[k]->prev = &(e->next);
+		e->next = h[k];
+		e->prev = &(h[k]);
+		e->port = port;
+		h[k] = e;
+	}
+	oldport=e->port;
+	now=qtime();
+	if (oldport!=port) {
+		if ((now - e->last_seen) > min_persistence) {
+			e->port=port;
+			e->last_seen = now;
+		}
+	} else {
+		e->last_seen = now;
+	}
+	return oldport;
+}
+
+#define delete_hash_entry(OLD) \
+	({ \
+	 *((OLD)->prev)=(OLD)->next; \
+	 if((OLD)->next != NULL) (OLD)->next->prev = (OLD)->prev; \
+	 free((OLD)); \
+	 })
+
+
+void delete_hash(unsigned char *dst,int vlan)
+{
+	struct hash_entry *old = find_entry(extmac(dst,vlan));
+
+	if(old == NULL) return;
+	qtime_csenter();
+	delete_hash_entry(old);
+	qtime_csexit();
+}
+
+/* for each entry of the global hash table 'h', calls function f, passing to it
+ * the hash entry and the additional arg 'arg' */
+static void for_all_hash(void (*f)(struct hash_entry *, void *), void *arg)
+{
+	int i;
+	struct hash_entry *e, *next;
+
+	for(i = 0; i < HASH_SIZE; i++){
+		for(e = h[i]; e; e = next){
+			next = e->next;
+			(*f)(e, arg);
+		}
+	}
+}
+
+static void delete_port_iterator (struct hash_entry *e, void *arg)
+{
+	int *pport=(int *)arg;
+	if (e->port == *pport)
+		delete_hash_entry(e);
+}
+
+void hash_delete_port (int port)
+{
+	qtime_csenter();
+	for_all_hash(delete_port_iterator,&port);
+	qtime_csexit();
+}
+
+static void delete_vlan_iterator (struct hash_entry *e, void *arg)
+{
+	int *vlan=(int *)arg;
+	if (EMAC2VLAN(e->dst) == (u_int16_t)(*vlan))
+		delete_hash_entry(e);
+}
+
+void hash_delete_vlan (int vlan)
+{
+	qtime_csenter();
+	for_all_hash(delete_vlan_iterator,&vlan);
+	qtime_csexit();
+}
+
+struct vlanport {int vlan; int port;};
+
+static void delete_vlanport_iterator (struct hash_entry *e, void *arg)
+{
+	struct vlanport *vp=(struct vlanport *)arg;
+	if ((EMAC2VLAN(e->dst)) == (u_int16_t)(vp->vlan) &&
+			e->port == vp->port)
+		delete_hash_entry(e);
+}
+
+void hash_delete_vlanport (int vlan,int port)
+{
+	struct vlanport vp={vlan,port};
+	qtime_csenter();
+	for_all_hash(delete_vlanport_iterator,&vp);
+	qtime_csexit();
+}
+
+struct vlansetofports {int vlan; bitarray setofports;};
+
+static void delete_vlansetofports_iterator (struct hash_entry *e, void *arg)
+{
+	struct vlansetofports *vp=(struct vlansetofports *)arg;
+	if ((EMAC2VLAN(e->dst)) == (u_int16_t)(vp->vlan) &&
+			ba_check(vp->setofports,e->port))
+		delete_hash_entry(e);
+}
+
+void hash_delete_vlanports (int vlan,bitarray setofports)
+{
+	struct vlansetofports vp={vlan,setofports};
+	qtime_csenter();
+	for_all_hash(delete_vlansetofports_iterator,&vp);
+	qtime_csexit();
+}
+
+static void flush_iterator (struct hash_entry *e, void *arg)
+{
+	delete_hash_entry(e);
+}
+
+void hash_flush ()
+{
+	qtime_csenter();
+	for_all_hash(flush_iterator,NULL);
+	qtime_csexit();
+}
+
+
+#define GC_INTERVAL 2
+#define GC_EXPIRE 100
+static int gc_interval;
+static int gc_expire;
+static unsigned int gc_timerno;
+
+/* clean from the hash table entries older than GC_EXPIRE seconds, given that
+ * 'now' points to a time_t structure describing the current time */
+static void gc(struct hash_entry *e, void *now)
+{
+	time_t t = *(time_t *) now;
+
+	if(e->last_seen + gc_expire < t)
+		delete_hash_entry(e);
+}
+
+/* clean old entries in the hash table 'h', and prepare the timer to be called
+ * again between GC_INTERVAL seconds */
+static void hash_gc(void *arg)
+{
+	time_t t = qtime();
+	for_all_hash(&gc, &t);
+}
+
+#define HASH_INIT(BIT) \
+	({ hash_bits=(BIT);\
+	 hash_mask=HASH_SIZE-1;\
+	 if ((h=(struct hash_entry **) calloc (HASH_SIZE,sizeof (struct hash_entry *))) == NULL) {\
+	 WARN("Failed to malloc hash table %s",strerror(errno));\
+	 exit(1); \
+	 }\
+	 })
+
+static inline int po2round(int vx)
+{
+	if (vx == 0)
+		return 0;
+	else {
+		int i=0;
+		int x=vx-1;
+		while (x) { x>>=1; i++; }
+		if (vx != 1<<i)
+			WARN("Hash size must be a power of 2. %d rounded to %d",vx,1<<i);
+		return i;
+	}
+}
+
+int hash_resize(int hash_size)
+{
+	if (hash_size > 0) {
+		hash_flush();
+		qtime_csenter();
+		free(h);
+		HASH_INIT(po2round(hash_size));
+		qtime_csexit();
+		return 0;
+	} else
+		return EINVAL;
+}
+
+int hash_set_gc_interval(int p)
+{
+	qtimer_del(gc_timerno);
+	gc_interval=p;
+	gc_timerno=qtimer_add(gc_interval,0,hash_gc,NULL);
+	return 0;
+}
+
+int hash_set_gc_expire(int e)
+{
+	gc_expire=e;
+	return 0;
+}
+
+int hash_set_minper(int e)
+{
+	min_persistence=e;
+	return 0;
+}
+
+int hash_get_gc_interval()
+{
+	return gc_interval;
+}
+
+int hash_get_gc_expire()
+{
+	return gc_expire;
+}
+
+/* sets sig_alarm as handler for SIGALRM, and run it a first time */
+void hash_init(int hash_size)
+{
+	HASH_INIT(po2round(hash_size));
+
+	gc_interval=GC_INTERVAL;
+	gc_expire=GC_EXPIRE;
+	gc_timerno=qtimer_add(gc_interval,0,hash_gc,NULL);
+}

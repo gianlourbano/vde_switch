@@ -103,9 +103,11 @@ EXPORT void init()
     cmds = realloc(cmds, ncmds * sizeof(struct comlist));
     memcpy(cmds + (ncmds - (sizeof(cl) / sizeof(struct comlist))), cl, sizeof(cl));
 
-    write(STDOUT_FILENO, GRN, strlen(GRN));
-    write(STDOUT_FILENO, prompt, strlen(prompt));
-    write(STDOUT_FILENO, RESET, strlen(RESET));
+    ;
+
+    // write(STDOUT_FILENO, GRN, strlen(GRN));
+    // write(STDOUT_FILENO, prompt, strlen(prompt));
+    // write(STDOUT_FILENO, RESET, strlen(RESET));
 }
 
 void printoutc(FILE *f, const char *format, ...)
@@ -264,7 +266,7 @@ EXPORT void handle_io(unsigned char type, int fd, int revents, void *private_dat
         { /*EOF || POLLHUP*/
             if (type == console_type)
             {
-                WARN("EOF on stdin, cleaning up and exiting");
+                WARN("\nEOF on stdin, cleaning up and exiting\n");
                 exit(0);
             }
             else
@@ -300,7 +302,7 @@ EXPORT void handle_io(unsigned char type, int fd, int revents, void *private_dat
     }
 }
 
-EXPORT int cleanup()
+EXPORT int cleanup(unsigned char type,int fd,void *arg)
 {
     if (cmds)
         free(cmds);

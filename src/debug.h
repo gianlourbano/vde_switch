@@ -1,7 +1,9 @@
 #ifndef DEBUG_H
 #define DEBUG_H
 
-#define DEBUG_LEVEL_WARN
+#include <stdio.h>
+
+#define DEBUG_LEVEL_LOG
 
 #define RED   "\x1B[31m"
 #define GRN   "\x1B[32m"

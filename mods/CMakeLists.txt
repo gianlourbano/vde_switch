@@ -30,6 +30,7 @@ foreach(child ${CHILDREN})
         file(GLOB SOURCES "${child}/*.c")
         if(SOURCES)
             include_directories(${child})
+            
             add_library(${child} SHARED ${SOURCES})
         endif()
     endif()
